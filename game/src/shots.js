@@ -1,79 +1,92 @@
-// The screenshot scenes behind ?shot=start|play|end. Each one plays the real rules forward from a
-// fresh world for a fixed number of steps, steered by a simple autopilot (look ahead each way the
-// paddle could move, keep clear of blocks, chase the lowest coin when that is safe), so the frame
-// is what a short game really looks like and the same seed always gives the same frame.
-import { FIELD, PLAYER, STEP } from './config.js';
-import { EVENT_OVER, KIND_BLOCK } from './world.js';
-import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+// shots.js — screenshot scenes behind ?shot=cover|street|mission|menu.
+// Each scene is built from the real game state (same seed, same rules), staged so one
+// frame shows the open world at its best: traffic, police, the minimap and a mission.
+import { makeCar, spawnPoliceCar, POLICE_COLOR } from './vehicles.js';
+import { makeMissionState, startMission, currentStep } from './missions.js';
 
-const START_SECONDS = 5;
-const PLAY_SECONDS = 26;
-const END_LIMIT_SECONDS = 600;
-/**
- * How far ahead, in seconds, the autopilot checks each way it could move: the play scene's pilot
- * looks well ahead and keeps all its lives; the end scene's looks only a moment ahead, so it is
- * caught out once the blocks speed up, as a hurried player is.
- */
-const HORIZON_PLAY = 0.7;
-const HORIZON_END = 0.25;
-const SAMPLE = 1 / 30;
-const DIRECTIONS = [0, -1, 1];
-/** Extra room, each side, it keeps between the paddle and a block. */
-const MARGIN = 10;
+export const SHOT_NAMES = ['cover', 'street', 'mission', 'menu'];
 
-/** Seconds until moving in `direction` (-1, 0, 1) runs the paddle into a block; Infinity when it never does. */
-function timeToHit(state, direction, horizon) {
-  const player = state.player;
-  for (let t = SAMPLE; t <= horizon; t += SAMPLE) {
-    const x = Math.min(FIELD.width - player.width, Math.max(0, player.x + direction * PLAYER.speed * t));
-    for (let index = 0; index < state.items.length; index += 1) {
-      const item = state.items[index];
-      if (!item.active || item.kind !== KIND_BLOCK) continue;
-      const y = item.y + item.speed * t;
-      if (y + item.height > player.y && y < player.y + player.height && item.x < x + player.width + MARGIN && item.x + item.width > x - MARGIN) return t;
-    }
+export function stageShot(name, game) {
+  const rng = game.rng;
+  const player = game.player;
+  game.screen = 'play';
+  game.missions = makeMissionState();
+
+  if (name === 'menu') {
+    game.screen = 'menu';
+    return { autopilot: null };
   }
-  return Infinity;
+
+  if (name === 'cover') {
+    // Rook in the Comet GT downtown, two police cruisers on his tail, three stars.
+    game.missions.index = 1;
+    startMission(game.missions, game);
+    const comet = makeCar(1660, 1060, 0, '#d41f2a', 'player');
+    comet.isComet = true;
+    comet.maxSpeed = 470;
+    comet.accel = 330;
+    comet.speed = 300;
+    game.cars.push(comet);
+    player.onFoot = false;
+    player.car = comet;
+    player.x = comet.x; player.y = comet.y;
+    player.wanted = 3;
+    player.cash = 1400;
+    const cop1 = makeCar(1160, 1110, 0, POLICE_COLOR, 'police');
+    cop1.speed = 330;
+    const cop2 = makeCar(1100, 1010, 0, POLICE_COLOR, 'police');
+    cop2.speed = 310;
+    game.cars.push(cop1, cop2);
+    // Extra traffic on the parallel road below for depth — keep the Comet's
+    // own lane (y=1060) clear so the chase is visibly moving.
+    for (let i = 0; i < 6; i++) {
+      const t = makeCar(1900 + i * 160, 1460 + (i % 2 === 0 ? -14 : 14), i % 2 === 0 ? 0 : Math.PI, ['#3d7dd9', '#e8b93c', '#5aa864'][i % 3], 'traffic');
+      t.speed = 120;
+      t.target = { x: 2900, y: 1460 };
+      game.cars.push(t);
+    }
+    // Clear any stray traffic or parked cars out of the Comet GT's lane ahead.
+    game.cars = game.cars.filter((c) => !((c.kind === 'traffic' || c.kind === 'parked') && c.x > 1600 && c.y > 990 && c.y < 1140));
+    return { autopilot: { throttle: 1, steer: 0 } };
+  }
+
+  if (name === 'street') {
+    // Rook on foot at a busy downtown crossing, traffic and crowds, first job live.
+    game.missions.index = 0;
+    startMission(game.missions, game);
+    player.x = 1460; player.y = 1460;
+    player.onFoot = true;
+    player.car = null;
+    player.cash = 0;
+    for (let i = 0; i < 10; i++) {
+      const t = makeCar(1060 + i * 170, 1460 + (i % 2 === 0 ? -16 : 16), i % 2 === 0 ? 0 : Math.PI, ['#d94f3d', '#3d7dd9', '#e8e4da', '#7a5aa8'][i % 4], 'traffic');
+      t.speed = 110 + (i % 3) * 30;
+      t.target = { x: i % 2 === 0 ? 3000 : 300, y: 1460 };
+      game.cars.push(t);
+    }
+    return { autopilot: null };
+  }
+
+  if (name === 'mission') {
+    // Job 2: Rook on foot beside the red Comet GT, marker on the car.
+    game.missions.index = 1;
+    startMission(game.missions, game);
+    const comet = makeCar(1660, 1060, Math.PI / 2, '#d41f2a', 'parked');
+    comet.isComet = true;
+    game.cars.push(comet);
+    player.x = 1620; player.y = 1120;
+    player.onFoot = true;
+    player.car = null;
+    player.cash = 500;
+    return { autopilot: null };
+  }
+
+  return { autopilot: null };
 }
 
-/** Of the safe ways to move, the one toward the lowest coin (or the centre); else the one that is hit last. */
-function autopilot(state, horizon) {
-  const player = state.player;
-  let coin = null;
-  for (let index = 0; index < state.items.length; index += 1) {
-    const item = state.items[index];
-    if (item.active && item.kind !== KIND_BLOCK && (coin === null || item.y > coin.y)) coin = item;
-  }
-  const target = coin === null ? FIELD.width / 2 : coin.x + coin.width / 2;
-  const centre = player.x + player.width / 2;
-  const wanted = target > centre + 8 ? 1 : target < centre - 8 ? -1 : 0;
-  let best = wanted;
-  let bestTime = timeToHit(state, wanted, horizon);
-  for (let index = 0; index < DIRECTIONS.length && bestTime !== Infinity; index += 1) {
-    const time = timeToHit(state, DIRECTIONS[index], horizon);
-    if (time > bestTime) {
-      bestTime = time;
-      best = DIRECTIONS[index];
-    }
-  }
-  return best;
-}
-
-/**
- * Set `world` to the named scene (start, play or end; any other name is start) and return the
- * screen to draw over it and the best score to show.
- */
-export function stageShot(name, world) {
-  world.reset();
-  if (name !== 'play' && name !== 'end') {
-    for (let index = 0; index < START_SECONDS / STEP; index += 1) world.step(STEP, 0, true);
-    return { screen: SCREEN_TITLE, best: 0 };
-  }
-  const limit = name === 'end' ? END_LIMIT_SECONDS : PLAY_SECONDS;
-  const horizon = name === 'end' ? HORIZON_END : HORIZON_PLAY;
-  for (let index = 0; index < limit / STEP; index += 1) {
-    if (world.step(STEP, autopilot(world.state, horizon), false) & EVENT_OVER) break;
-  }
-  const over = world.state.lives === 0;
-  return { screen: over ? SCREEN_OVER : SCREEN_PLAY, best: world.state.score };
+export function placeCometCar(game) {
+  const comet = makeCar(1660, 1060, Math.PI / 2, '#d41f2a', 'parked');
+  comet.isComet = true;
+  game.cars.push(comet);
+  return comet;
 }
